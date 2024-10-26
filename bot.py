@@ -1,4 +1,6 @@
 import socket
+import threading
+import time
 
 # APRS KISS settings
 SOURCE_CALLSIGN = "AD8NT"
@@ -17,20 +19,20 @@ LONGITUDE = "07201.75W"
 SYMBOL_TABLE = "/"
 SYMBOL = "O"  # House or location symbol in APRS
 
+# Set of received message IDs to avoid duplicate ACKs
+received_msgs = set()
 
 def ax25_encode_callsign(callsign, is_last=False):
     callsign, ssid = (callsign.split("-") + ["0"])[:2]
     callsign = callsign.upper().ljust(6)
 
     encoded = bytearray([ord(c) << 1 for c in callsign[:6]])
-
     ssid = int(ssid) & 0x0F
     ssid_byte = (ssid << 1) | 0x60
     if is_last:
         ssid_byte |= 0x01
 
     encoded.append(ssid_byte)
-
     return encoded
 
 def ax25_create_frame(source, destination, digipeaters, message):
@@ -44,7 +46,6 @@ def ax25_create_frame(source, destination, digipeaters, message):
 
     frame.extend([0x03, 0xF0])
     frame.extend(message.encode('ascii'))
-
     return frame
 
 def create_location_packet():
@@ -68,7 +69,6 @@ def kiss_encode(ax25_frame):
     return bytes(kiss_frame)
 
 def send_kiss_message(sock, source_call, dest_call, digipeaters, message):
-    # Ensure dest_call is 9 characters with padding, as required by APRS spec
     dest_call_padded = dest_call.ljust(9)
     aprs_message = f":{dest_call_padded}:{message}"
 
@@ -80,10 +80,18 @@ def send_kiss_message(sock, source_call, dest_call, digipeaters, message):
 
 def parse_command(aprs_message):
     parts = aprs_message.strip().split(":")
+
     if len(parts) > 2:
         command = parts[2].strip().upper()
+
+        # Ignore messages that start with "ACK"
+        if command.startswith("ACK"):
+            return None
+
         return COMMANDS.get(command, f"Unknown command: {command}")
+
     return None
+
 
 def extract_aprs_message(ax25_frame):
     num_callsigns = 2 + len(DIGI_PATH)
@@ -106,6 +114,12 @@ def extract_callsigns(ax25_frame):
             callsign += f"-{ssid}"
         callsigns.append(callsign)
     return callsigns
+
+def send_ack(sock, to_call, msg_no):
+    to_call_padded = f"{to_call:<9}"
+    ack_message = f":{to_call_padded}:ack{msg_no}"
+    send_kiss_message(sock, SOURCE_CALLSIGN, to_call, DIGI_PATH, ack_message)
+    print(f"Sent ACK for message {msg_no} to {to_call}")
 
 def receive_kiss_messages(sock):
     buffer = bytearray()
@@ -130,10 +144,15 @@ def receive_kiss_messages(sock):
                     source_callsign = callsigns[1]  # Sender's callsign
                     print(f"Received message from {source_callsign}: {aprs_message}")
 
+                    if aprs_message.startswith(":"):
+                        msg_no = aprs_message.split(" ")[0][1:]
+                        if msg_no and msg_no not in received_msgs:
+                            received_msgs.add(msg_no)
+                            threading.Thread(target=send_ack, args=(sock, source_callsign, msg_no)).start()
+
                     response = parse_command(aprs_message)
                     if response:
                         send_kiss_message(sock, SOURCE_CALLSIGN, source_callsign, DIGI_PATH, response)
-
 
 def kiss_decode(kiss_frame):
     if kiss_frame[0] != 0xC0 or kiss_frame[-1] != 0xC0:
