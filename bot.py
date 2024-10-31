@@ -20,12 +20,18 @@ def send_ack(msg_no, dest):
             print("KISS connection is not established.")
             return
 
+        # Check if msg_no contains any letters
+        has_letters = any(char.isalpha() for char in msg_no)
+
+        # Add the bracket if msg_no has letters, otherwise add nothing
+        ack_suffix = "}" if has_letters else ""
+
         # Construct the ACK frame using the specified format
         ack_frame = Frame.ui(
             destination="APWW11",
             source=MYCALL,
             path=["WIDE1-1"],
-            info=f":{dest:<9}:ack{msg_no}" + "}"
+            info=f":{dest:<9}:ack{msg_no}{ack_suffix}"
         )
 
         # Send the frame
@@ -35,6 +41,7 @@ def send_ack(msg_no, dest):
 
     except Exception as e:
         print(f"Error sending ACK: {e}")
+
 
 
 def send_response(dest, message):
